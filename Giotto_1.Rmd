@@ -1,0 +1,360 @@
+# Visium Part I
+
+## Load in data
+
+```{r, eval=FALSE}
+library(Giotto)
+
+## Set instructions
+results_folder <- "D:/Data/2024-06-HelenaCatharineAegerter-BaL/data/processed/giotto_results"
+
+python_path <- NULL
+
+instructions <- createGiottoInstructions(
+    save_dir = results_folder,
+    save_plot = TRUE,
+    show_plot = FALSE,
+    return_plot = FALSE,
+    python_path = python_path
+)
+
+## Provide the path to the visium folder
+data_path <- "D:/Data/2024-06-HelenaCatharineAegerter-BaL/data/raw/COUNTS/SCC059/SCC059/outs/"
+
+## Create object directly from the visium folder
+visium <- createGiottoVisiumObject(
+    visium_dir = data_path,
+    expr_data = "raw",
+    png_name = "tissue_lowres_image.png",
+    gene_column_index = 2,
+    instructions = instructions
+)
+```
+
+
+## Subset on spots that were covered by tissue
+
+```{r, eval=FALSE}
+tissue_plot <- spatPlot2D(
+    gobject = visium,
+    cell_color = "in_tissue",
+    point_size = 2,
+    cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+    show_image = TRUE, 
+    return_plot = TRUE,
+    save_param = list(save_name = "in_tissue", dpi=600))
+```
+
+```{r}
+polygon_coordinates <- plotInteractivePolygons(tissue_plot)
+```
+
+```{r}
+
+giotto_polygons <- createGiottoPolygonsFromDfr(polygon_coordinates, 
+                                               name = "selections",
+                                               calc_centroids = TRUE)
+visium<- addGiottoPolygons(gobject = visium,
+                                  gpolygons = list(giotto_polygons))
+
+visium <- addPolygonCells(visium,
+                                polygon_name = "selections")
+
+getCellsFromPolygon(visium,
+                    polygon_name = "selections",
+                    polygons = "polygon 1")
+```
+
+
+Use the metadata column "selections" to subset the object and keep only the spots corresponding to the tissue area (i.e. in polygon 1).
+
+```{r, eval=FALSE}
+metadata <- getCellMetadata(gobject = visium,
+                            output = "data.table")
+
+in_tissue_barcodes <- metadata[selections == 'polygon 1' & in_tissue == 1]$cell_ID
+
+visium <- subsetGiotto(gobject = visium,
+                             cell_ids = in_tissue_barcodes)
+```
+
+```{r}
+tissue_plot <- spatPlot2D(
+    gobject = visium,
+    cell_color = "in_tissue",
+    point_size = 2,
+    cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+    show_image = TRUE, 
+    return_plot = TRUE,
+    save_param = list(save_name = "in_tissue_subset", dpi=600))
+```
+
+
+## Quality control
+
+- Statistics
+
+Use the function addStatistics() to count the number of features per spot. The statistics information will be stored in the metadata table under the new column "nr_feats". Then, use this column to visualize the number of features per spot across the sample.
+
+```{r, eval=FALSE}
+visium_statistics <- addStatistics(gobject = visium,
+                                         expression_values = "raw")
+
+## visualize
+spatPlot2D(gobject = visium_statistics, 
+           cell_color = "nr_feats", 
+           color_as_factor = FALSE,
+           save_param = list(save_name = "nr_feats", dpi=600))
+```
+
+filterDistributions() creates a histogram to show the distribution of features per spot across the sample.
+
+```{r, eval=FALSE}
+filterDistributions(gobject = visium_statistics, 
+                    detection = "cells",
+                    save_param = list(save_name = "histogram_cells", dpi=600))
+```
+
+When setting the detection = "feats", the histogram shows the distribution of cells with certain numbers of features across the sample.
+
+```{r, eval=FALSE}
+filterDistributions(gobject = visium_statistics, 
+                    detection = "feats",
+                    save_param = list(save_name = "histogram_feats", dpi=600))
+```
+
+filterCombinations() may be used to test how different filtering parameters will affect the number of cells and features in the filtered data:
+
+```{r, eval=FALSE}
+filterCombinations(gobject = visium_statistics,
+                   expression_thresholds = c(1, 2, 3),
+                   feat_det_in_min_cells = c(50, 100, 200),
+                   min_det_feats_per_cell = c(500, 1000, 1500))
+```
+
+## Filtering
+
+Use the arguments feat_det_in_min_cells and min_det_feats_per_cell to set the minimal number of cells where an individual feature must be detected and the minimal number of features per spot/cell, respectively, to filter the giotto object. All the features and cells under those thresholds will be removed from the sample.
+
+```{r, eval=FALSE}
+visium <- filterGiotto(
+    gobject = visium,
+    expression_threshold = 1,
+    feat_det_in_min_cells = 50,
+    min_det_feats_per_cell = 800,
+    expression_values = "raw",
+    verbose = TRUE
+)
+```
+
+## Normalization
+
+Use scalefactor to set the scale factor to use after library size normalization. The default value is 6000, but you can use a different one.
+
+```{r, eval=FALSE}
+visium <- normalizeGiotto(
+    gobject = visium,
+    scalefactor = 6000,
+    verbose = TRUE
+)
+```
+
+Calculate the normalized number of features per spot and save the statistics in the metadata table.
+
+```{r, eval=FALSE}
+visium <- addStatistics(gobject = visium)
+
+## visualize
+spatPlot2D(gobject = visium, 
+           cell_color = "nr_feats", 
+           color_as_factor = FALSE,
+           save_param = list(save_name = "nr_feats_post_filtering", dpi=600))
+```
+## Feature selection
+ 
+### Highly Variable Features:
+
+Calculating Highly Variable Features (HVF) is necessary to identify genes (or features) that display significant variability across the spots. There are a few methods to choose from depending on the underlying distribution of the data:
+
+- loess regression is used when the relationship between mean expression and variance is non-linear or can be described by a non-parametric model.
+
+```{r, eval=FALSE}
+#visium <- calculateHVF(gobject = visium, 
+#                             method = "cov_loess",
+#                             save_plot = TRUE,
+#                             default_save_name = "HVFplot_loess")
+```
+- binned (covariance groups) are used when gene expression variability differs across expression levels or spatial regions, without assuming a specific relationship between mean expression and variance. This is the default method in the calculateHVF() function.
+
+```{r, eval=FALSE}
+#visium <- calculateHVF(gobject = visium, 
+#                             method = "cov_groups",
+#                             save_plot = TRUE,
+#                             default_save_name = "HVFplot_binned")
+```
+
+
+## Dimension Reduction
+
+### PCA
+
+Principal Components Analysis (PCA) is applied to reduce the dimensionality of gene expression data by transforming it into principal components, which are linear combinations of genes ranked by the variance they explain, with the first components capturing the most variance. 
+
+- runPCA() will look for the previous calculation of highly variable features, stored as a column in the feature metadata. If the HVF labels are not found in the giotto object, then runPCA() will use all the features available in the sample to calculate the Principal Components.
+
+```{r, eval=FALSE}
+visium <- runPCA(gobject = visium)
+```
+
+- Visualization
+
+Create a screeplot to visualize the percentage of variance explained by each component.
+
+```{r, eval=FALSE}
+screePlot(gobject = visium, 
+          ncp = 30,
+          save_param = list(save_name = "ScreePlot", dpi=600))
+```
+Visualized the PCA calculated using the HVFs.
+
+```{r, eval=FALSE}
+plotPCA(gobject = visium,
+        save_param = list(save_name = "PCA", dpi=600))
+```
+
+Unlike PCA, Uniform Manifold Approximation and Projection (UMAP) and t-Stochastic Neighbor Embedding (t-SNE) do not assume linearity. After running PCA, UMAP or t-SNE allows you to visualize the dataset in 2D.  
+
+
+### UMAP
+
+```{r, eval=FALSE}
+visium <- runUMAP(visium, dimensions_to_use = 1:10, n_neighbors = 15, min_dist = 0.1)
+```
+
+- Visualization
+
+```{r, eval=FALSE}
+plotUMAP(gobject = visium,
+         save_param = list(save_name = "UMAP", dpi=600))
+```
+
+### t-SNE
+
+```{r, eval=FALSE}
+visium <- runtSNE(gobject = visium, 
+                        dimensions_to_use = 1:10)
+```
+
+- Visualization
+
+```{r, eval=FALSE}
+plotTSNE(gobject = visium,
+         save_param = list(save_name = "TSNE", dpi=600))
+```
+
+
+## Clustering
+
+- Create a sNN network (default)
+
+```{r, eval=FALSE}
+visium <- createNearestNetwork(gobject = visium, 
+                                     dimensions_to_use = 1:14, 
+                                     k = 15)
+```
+
+### Calculate Leiden clustering
+
+Use the previously calculated shared nearest neighbors to create clusters. The default resolution is 1, but you can decrease the value to avoid the over calculation of clusters.
+
+```{r, eval=FALSE}
+visium <- doLeidenClusterIgraph(gobject = visium, 
+                                resolution = 0.3, 
+                                n_iterations = 1000)
+```
+
+- Visualization
+
+```{r, eval=FALSE}
+plotPCA(gobject = visium,
+        cell_color = "leiden_clus",
+        save_param = list(save_name = "PCA_Leiden", dpi=600))
+```
+
+Use the cluster IDs to visualize the clusters in the UMAP space.
+
+```{r, eval=FALSE}
+plotUMAP(gobject = visium,
+         cell_color = "leiden_clus", 
+         show_NN_network = FALSE, 
+         point_size = 2.5,
+         save_param = list(save_name = "UMAP_Leiden", dpi=600))
+```
+
+Set the argument "show_NN_network = TRUE" to visualize the connections between spots.
+
+```{r, eval=FALSE}
+plotUMAP(gobject = visium,
+         cell_color = "leiden_clus", 
+         show_NN_network = TRUE, 
+         point_size = 2.5,
+         save_param = list(save_name = "UMAP_Leiden_NN", dpi=600))
+```
+
+Use the cluster IDs to visualize the clusters on the tSNE.
+
+```{r, eval=FALSE}
+plotTSNE(gobject = visium,
+         cell_color = "leiden_clus",
+         point_size = 2.5,
+         save_param = list(save_name = "TSNE_Leiden", dpi=600))
+```
+
+Set the argument "show_NN_ne,twork = TRUE" to visualize the connections between spots.
+
+```{r, eval=FALSE}
+plotTSNE(gobject = visium,
+         cell_color = "leiden_clus",
+         point_size = 2.5,
+         show_NN_network = TRUE,
+         save_param = list(save_name = "TSNE_Leiden_NN", dpi=600))
+```
+
+Use the cluster IDs to visualize their spatial location.
+
+```{r, eval=FALSE}
+spatPlot2D(visium, 
+           cell_color = "leiden_clus",
+           point_size = 3,
+           save_param = list(save_name = "Spatial_Leiden", dpi=600))
+```
+
+```{r}
+spatPlot2D(visium,
+           show_image = TRUE,
+           cell_color = "leiden_clus",
+           group_by = "leiden_clus",
+           cow_n_col = 3,
+           point_size = 1,
+           point_alpha = 1,
+           show_legend = FALSE,
+           coord_fix_ratio = 1,
+           save_param = list(save_name = "Spatial_Leiden_separate", dpi=600))
+```
+
+
+## Save the object
+
+```{r, eval=FALSE}
+saveGiotto(
+  gobject = visium, 
+  foldername = "giotto_object",
+  dir = "D:/Data/2024-06-HelenaCatharineAegerter-BaL/data/processed/giotto_results",
+  overwrite = TRUE)
+```
+
+## Session info
+
+```{r, eval=FALSE}
+sessionInfo()
+```

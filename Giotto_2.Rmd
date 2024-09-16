@@ -1,0 +1,439 @@
+# Visium Part II
+
+## Load the object
+
+```{r, eval=FALSE}
+library(Giotto)
+
+results_folder <- "D:/Data/2024-06-HelenaCatharineAegerter-BaL/data/processed/giotto_results"
+
+visium <- loadGiotto(paste0(results_folder, "/giotto_object"))
+```
+
+
+## Differential expression
+
+### Gini markers
+
+The Gini method identifies genes that are very selectively expressed in a specific cluster, however not always expressed in all cells of that cluster. In other words, highly specific but not necessarily sensitive at the single-cell level.
+
+- Calculate the top marker genes per cluster using the gini method.
+
+```{r, eval=FALSE}
+gini_markers <- findMarkers_one_vs_all(gobject = visium,
+                                       method = "gini",
+                                       expression_values = "normalized",
+                                       cluster_column = "leiden_clus",
+                                       min_feats = 10)
+
+write.csv(gini_markers, paste0(results_folder, "/gini_markers.csv"))
+
+topgenes_gini <- gini_markers[, head(.SD, 2), by = "cluster"]$feats
+```
+
+- Visualize 
+
+Plot the normalized expression distribution of the top expressed genes.
+
+```{r, eval=FALSE}
+violinPlot(visium, 
+           feats = unique(topgenes_gini), 
+           cluster_column = "leiden_clus",
+           strip_text = 6, 
+           strip_position = "right",
+           save_param = list(base_width = 5, base_height = 30, save_name = "Gini_violin", dpi=600))
+```
+
+Use the cluster IDs to create a heatmap with the normalized expression of the top expressed genes per cluster.
+
+```{r, eval=FALSE}
+plotMetaDataHeatmap(visium, 
+                    selected_feats = unique(topgenes_gini),
+                    metadata_cols = "leiden_clus",
+                    x_text_size = 10, y_text_size = 10,
+                    save_param = list(save_name = "Gini_heatmap", dpi=600))
+```
+
+Visualize the scaled expression spatial distribution of the top expressed genes across the sample.
+
+```{r, eval=FALSE}
+dimFeatPlot2D(visium, 
+              expression_values = "scaled",
+              feats = sort(unique(topgenes_gini)),
+              cow_n_col = 5, 
+              point_size = 1,
+              save_param = list(base_width = 25, base_height = 20, save_name = "Gini_umap", dpi=600))
+```
+
+### Scran markers
+
+The Scran method is preferred for robust differential expression analysis, especially when addressing technical variability or differences in sequencing depth across spatial locations. [redo]
+
+- Calculate the top marker genes per cluster using the scran method
+
+```{r, eval=FALSE}
+scran_markers <- findMarkers_one_vs_all(gobject = visium,
+                                       method = "scran",
+                                       expression_values = "normalized",
+                                       cluster_column = "leiden_clus",
+                                       min_feats = 10)
+
+write.csv(scran_markers, paste0(results_folder, "/scran_markers.csv"))
+
+topgenes_scran <- scran_markers[, head(.SD, 2), by = "cluster"]$feats
+```
+
+- Visualize 
+
+Plot the normalized expression distribution of the top expressed genes.
+
+```{r, eval=FALSE}
+violinPlot(visium, 
+           feats = unique(topgenes_scran), 
+           cluster_column = "leiden_clus",
+           strip_text = 6, 
+           strip_position = "right",
+           save_param = list(base_width = 5, base_height = 30, save_name = "scran_violin", dpi=600))
+```
+
+Use the cluster IDs to create a heatmap with the normalized expression of the top expressed genes per cluster.
+
+```{r, eval=FALSE}
+plotMetaDataHeatmap(visium, 
+                    selected_feats = unique(topgenes_scran),
+                    metadata_cols = "leiden_clus",
+                    x_text_size = 10, y_text_size = 10,
+                    save_param = list(save_name = "scran_heatmap", dpi=600))
+```
+
+Visualize the scaled expression spatial distribution of the top expressed genes across the sample.
+
+```{r, eval=FALSE}
+dimFeatPlot2D(visium, 
+              expression_values = "scaled",
+              feats = sort(unique(topgenes_scran)),
+              cow_n_col = 5, 
+              point_size = 1,
+              save_param = list(base_width = 20, base_height = 20, save_name = "scran_umap", dpi=600))
+```
+
+In practice, it is often beneficial to apply both Gini and Scran methods and compare results for a more complete understanding of differential gene expression across clusters. 
+
+
+## Enrichment & Deconvolution
+
+Visium spatial transcriptomics does not provide single-cell resolution, making cell type annotation a harder problem. Giotto provides several ways to calculate enrichment of specific cell-type signature gene lists.
+
+```{r}
+# Load the RDS file
+sc_data <- readRDS("D:/Data/2024-06-HelenaCatharineAegerter-BaL/data/raw/Colossus_v1.rds")
+
+# Convert Seurat object to Giotto
+sc_data_giotto <- seuratToGiottoV5(sobject = sc_data, 
+                                     spatial_assay = "RNA", 
+                                     dim_reduction = c("pca", "harmony", "umap_harmony_60"))
+```
+
+### PAGE/Rank
+
+Parametric Analysis of Gene Set Enrichment (PAGE) and Rank enrichment both aim to determine whether a predefined set of genes show statistically significant differences in expression compared to other genes in the dataset. 
+
+- Calculate the cell type markers
+
+```{r, eval=FALSE}
+markers_scran <- findMarkers_one_vs_all(gobject = sc_data_giotto, 
+                                        method = "scran",
+                                        expression_values = "normalized",
+                                        cluster_column = "subsets", 
+                                        min_feats = 3)
+
+write.csv(markers_scran, paste0(results_folder, "/scran_markers_SC.csv"))
+
+top_markers <- markers_scran[, head(.SD, 10), by = "cluster"]
+
+write.csv(markers_scran, paste0(results_folder, "/scran_markers_SC_top_10_markers.csv"))
+
+celltypes <- levels(factor(markers_scran$cluster)) 
+```
+
+- Create the signature matrix
+
+```{r, eval=FALSE}
+sign_list <- list()
+
+for (i in 1:length(celltypes)){
+  sign_list[[i]] = top_markers[which(top_markers$cluster == celltypes[i]),]$feats
+}
+
+sign_matrix <- makeSignMatrixPAGE(sign_names = celltypes,
+                                  sign_list = sign_list)
+
+```
+
+- Run the enrichment test with PAGE
+
+```{r, eval=FALSE}
+visium <- runPAGEEnrich(gobject = visium, 
+                              sign_matrix = sign_matrix)
+```
+
+- Visualize
+
+Create a heatmap showing the enrichment of cell types (from the single-cell data annotation) in the spatial dataset clusters.
+
+```{r, eval=FALSE}
+cell_types_PAGE <- colnames(sign_matrix)
+
+plotMetaDataCellsHeatmap(gobject = visium,
+                         metadata_cols = "leiden_clus",
+                         value_cols = cell_types_PAGE,
+                         spat_enr_names = "PAGE",
+                         x_text_size = 8,
+                         y_text_size = 8,
+                         save_param = list(save_name = "PAGE_rank_heatmap", dpi = 600))
+```
+Plot the spatial distribution of the cell types.
+
+```{r, eval=FALSE}
+for (i in 1:length(cell_types_PAGE)) {
+  tryCatch({
+    spatCellPlot2D(gobject = visium,
+                   spat_enr_names = "PAGE",
+                   cell_annotation_values = cell_types_PAGE[i],
+                   cow_n_col = 1,
+                   coord_fix_ratio = 1, 
+                   point_size = 3.2, 
+                   show_legend = TRUE,
+                   save_param = list(save_name = paste0("PAGE_Rank_", cell_types_PAGE[i], "_plot"), dpi = 600))
+  }, error = function(e) {
+    message(paste("Error in plotting for cell type:", cell_types_PAGE[i], " - Skipping."))
+  })
+}
+```
+
+### SpatialDWLS
+
+Spatial Dampened Weighted Least Squares (DWLS) estimates the proportions of different cell types across spots in a tissue. 
+
+- Create the signature matrix
+
+```{r, eval=FALSE}
+sign_matrix <- makeSignMatrixDWLSfromMatrix(
+    matrix = getExpression(sc_data_giotto,
+                           values = "normalized",
+                           output = "matrix"),
+    cell_type = pDataDT(sc_data_giotto)$subsets,
+    sign_gene = top_markers$feats)
+```
+
+- Run the DWLS Deconvolution
+
+This step may take a couple of minutes to run.
+
+```{r, eval=FALSE}
+visium <- runDWLSDeconv(gobject = visium, 
+                              sign_matrix = sign_matrix)
+```
+
+- Visualize
+
+Plot the DWLS deconvolution result creating with pie plots showing the proportion of each cell type per spot.
+
+```{r, eval=FALSE}
+spatDeconvPlot(visium, 
+               show_image = FALSE,
+               radius = 100,
+               legend_text = 4,
+               save_param = list(save_name = "DWLS_spatial_pie_plot", dpi = 600))
+```
+```{r}
+cell_types_DWLS <- cell_types_PAGE
+
+for (i in 1:length(cell_types_DWLS)) {
+  tryCatch({
+    spatCellPlot2D(gobject = visium,
+                   spat_enr_names = "DWLS",
+                   cell_annotation_values = cell_types_DWLS[i],
+                   gradient_limits = c(0,1),
+                   gradient_midpoint = 0.5,
+                   cow_n_col = 1,
+                   coord_fix_ratio = 1, 
+                   point_size = 3.2, 
+                   show_legend = TRUE,
+                   save_param = list(save_name = paste0("DWLS_", cell_types_DWLS[i], "_plot"), dpi = 600))
+  }, error = function(e) {
+    message(paste("Error in plotting for cell type:", cell_types_DWLS[i], " - Skipping."))
+  })
+}
+```
+
+## Spatial expression patterns
+
+### Spatial variable genes
+
+- Create a spatial network
+
+```{r, eval=FALSE}
+visium <- createSpatialNetwork(gobject = visium,
+                                     method = "kNN", 
+                                     k = 6,
+                                     maximum_distance_knn = 400,
+                                     name = "spatial_network")
+
+spatPlot2D(gobject = visium,  
+           show_network= TRUE,
+           network_color = "blue", 
+           spatial_network_name = "spatial_network",
+           save_param = list(save_name = "spatial_network_kNN_6", dpi = 600))
+```
+
+- Rank binarization
+
+Rank the genes on the spatial dataset depending on whether they exhibit a spatial pattern location or not.
+
+This step may take a few minutes to run.
+
+```{r, eval=FALSE}
+ranktest <- binSpect(visium, 
+                     bin_method = "rank",
+                     calc_hub = TRUE, 
+                     hub_min_int = 5,
+                     spatial_network_name = "spatial_network")
+```
+
+- Visualize top results
+
+Plot the scaled expression of genes with the highest probability of being spatial genes.
+
+```{r, eval=FALSE}
+spatFeatPlot2D(visium, 
+               expression_values = "scaled",
+               feats = ranktest$feats[1:6], 
+               cow_n_col = 2, 
+               point_size = 1,
+               save_param = list(save_name = "top_spatial_genes", dpi = 600))
+```
+
+### Spatial co-expression modules
+
+- Cluster the top 500 spatial genes into 8 clusters
+
+```{r, eval=FALSE}
+ext_spatial_genes <- ranktest[1:500,]$feats
+```
+
+- Use detectSpatialCorGenes function to calculate pairwise distances between genes.
+
+```{r, eval=FALSE}
+spat_cor_netw_DT <- detectSpatialCorFeats(
+    visium,
+    method = "network",
+    spatial_network_name = "spatial_network",
+    subset_feats = ext_spatial_genes)
+```
+
+- Identify most similar spatially correlated genes for one gene. Cyp2f2 was selected at random for demonstration purposes.
+
+```{r, eval=FALSE}
+gene_of_interest <- "Cyp2f2"
+
+top10_genes <- showSpatialCorFeats(spat_cor_netw_DT, 
+                                  feats = gene_of_interest, 
+                                  show_top_feats = 10)
+```
+
+- Visualize
+
+Plot the scaled expression of the 3 genes with most similar spatial patterns to the gene of interest.
+
+```{r, eval=FALSE}
+spatFeatPlot2D(visium, 
+               expression_values = "scaled",
+               feats = top10_genes$variable[1:4], 
+               point_size = 1.5,
+               save_param = list(save_name = paste0("spatial_genes_", gene_of_interest), dpi = 600))
+```
+
+- Cluster spatial genes
+
+```{r, eval=FALSE}
+spat_cor_netw_DT <- clusterSpatialCorFeats(spat_cor_netw_DT, 
+                                           name = "spat_netw_clus", 
+                                           k = 8)
+```
+
+- Visualize clusters
+
+Plot the correlation of the top 500 spatial genes with their assigned cluster.
+
+```{r, eval=FALSE}
+heatmSpatialCorFeats(visium,
+                     spatCorObject = spat_cor_netw_DT,
+                     use_clus_name = "spat_netw_clus",
+                     heatmap_legend_param = list(title = NULL),
+                     save_param = list(save_name = "correlation_plot_heatmap", dpi = 600))
+```
+
+- Rank spatial correlated clusters and show genes for selected clusters
+
+```{r, eval=FALSE}
+netw_ranks <- rankSpatialCorGroups(
+  visium,
+  spatCorObject = spat_cor_netw_DT, 
+  use_clus_name = "spat_netw_clus")
+
+write.csv(netw_ranks, paste0(results_folder, "/correlation_clusters_overview.csv"))
+```
+
+Plot the correlation and number of spatial genes in each cluster.
+
+```{r, eval=FALSE}
+top_netw_spat_cluster <- showSpatialCorFeats(spat_cor_netw_DT, 
+                                            use_clus_name = "spat_netw_clus",
+                                            selected_clusters = NULL, 
+                                            show_top_feats = 1)
+
+write.csv(top_netw_spat_cluster, paste0(results_folder, "/correlation_clusters_genes.csv"))
+```
+
+- Create the metagene enrichment score per co-expression cluster
+
+```{r, eval=FALSE}
+cluster_genes_DT <- showSpatialCorFeats(spat_cor_netw_DT, 
+                                        use_clus_name = "spat_netw_clus", 
+                                        show_top_feats = 1)
+
+cluster_genes <- cluster_genes_DT$clus 
+names(cluster_genes) <- cluster_genes_DT$feat_ID
+
+visium <- createMetafeats(visium, 
+                                feat_clusters = cluster_genes, 
+                                name = "cluster_metagene")
+```
+
+Plot the spatial distribution of the metagene enrichment scores of each spatial co-expression cluster.
+
+```{r, eval=FALSE}
+for (i in 1:length(netw_ranks$clusters)) {
+  spatCellPlot(visium,
+               spat_enr_names = "cluster_metagene",
+               cell_annotation_values = netw_ranks$clusters[i],
+               point_size = 3.2,
+               save_param = list(save_name = paste0("Metagene_", netw_ranks$clusters[i], "_plot"), dpi = 600))
+}
+```
+## Save the object
+
+```{r, eval=FALSE}
+saveGiotto(
+  gobject = visium, 
+  foldername = "giotto_object",
+  dir = "D:/Data/2024-06-HelenaCatharineAegerter-BaL/data/processed/giotto_results",
+  overwrite = TRUE)
+```
+
+## Session info
+
+```{r, eval=FALSE}
+sessionInfo()
+```
